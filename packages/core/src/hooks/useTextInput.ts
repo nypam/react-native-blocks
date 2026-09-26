@@ -22,7 +22,8 @@ export function useTextInput(blockId: string) {
         mergeBlock,
         splitBlock,
         removeBlock,
-        getBlockSnapshot
+        getBlockSnapshot,
+        setBlockTitle
     } = useBlocksContext();
     const {
         registerRef,
@@ -189,6 +190,7 @@ export function useTextInput(blockId: string) {
 
     const handleChangeText = (text: string) => {
         valueRef.current = text;
+        setBlockTitle(blockId, text);
     }
 
     const getTextInputProps : () => TextInputProps = () => {

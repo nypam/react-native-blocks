@@ -80,8 +80,8 @@ const initialBlocks = {
 
 export default function App() {
 
-  const extractBlocks = (blocks) => {
-    console.log("blocks", blocks);
+  const handleChange = ({ updated, removed }) => {
+    console.log("updated", Object.keys(updated), "removed", removed);
   }
 
   return (
@@ -89,7 +89,7 @@ export default function App() {
       <SafeAreaView style={{ flex: 1}} edges={["top"]}>
         <Editor          
           defaultBlocks={blankNote}
-          extractBlocks={extractBlocks}
+          onChange={handleChange}
         >
           <Block
             type="text"
@@ -124,6 +124,27 @@ export default function App() {
   );
 }
 ```
+
+## Saving changes
+
+`<Editor/>` has no save button. Pass `onChange` and it fires after the page is edited, including while typing:
+
+```js
+<Editor
+  defaultBlocks={initialBlocks}
+  onChange={({ updated, removed, getBlocks }) => {
+    // updated: blocks created or modified since the last change, keyed by id.
+    // removed: ids of blocks removed since the last change (nested blocks included).
+    // getBlocks(): the whole page, with the same shape as `defaultBlocks`.
+    savePage(pageId, { updated, removed });
+  }}
+>
+```
+
+- Edits are batched: `onChange` fires once no edit happened for 500ms, not on every keystroke.
+- Pending edits are reported right away when the app leaves the foreground or the editor unmounts.
+- `updated`, `removed` and `getBlocks()` are copies, so you can keep them or send them as they are.
+- `onChange` does not retry. If a save fails, keep its `updated` and `removed` and merge them into the next save (or save `getBlocks()` instead), and send saves one at a time so they reach your back-end in order.
 
 ## Warning
 This library is still a work in progress so expect breaking changes on future releases. If you have any doubts you can join our [Discord server](https://discord.gg/utxtAafD8n).

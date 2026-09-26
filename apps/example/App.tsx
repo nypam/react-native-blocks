@@ -70,8 +70,9 @@ const initialBlocks = {
 
 export default function App() {
 
-  const extractBlocks = (blocks) => {
-    console.log("blocks", blocks);
+  // Fires after every edit (batched). Send it to your back-end to save the page automatically.
+  const handleChange = ({ updated, removed }) => {
+    console.log("updated", Object.keys(updated), "removed", removed);
   }
 
   return (
@@ -79,7 +80,7 @@ export default function App() {
       <SafeAreaView style={{ flex: 1}} edges={["top"]}>
         <Editor          
           defaultBlocks={initialBlocks}
-          extractBlocks={extractBlocks}
+          onChange={handleChange}
           ToolbarComponent={() => {
             return (
               <Footer.ContextProvider>
