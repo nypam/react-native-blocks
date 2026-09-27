@@ -3,7 +3,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { Pressable, View } from "react-native";
 import { LayoutProvider } from "./LayoutProvider";
 import { useKeyboardStatus } from "../hooks/useKeyboardStatus";
-import { BlocksProvider, useBlocksContext } from "./BlocksContext";
+import { BlocksProvider, BlocksChange, useBlocksContext } from "./BlocksContext";
 import { BlockRegistration, useBlockRegistrationContext } from "./BlockRegistration";
 import { TextBlocksProvider, useTextBlocksContext } from "./TextBlocksProvider";
 import { ScrollProvider } from "./ScrollProvider";
@@ -75,7 +75,13 @@ function RenderTree(props: RenderTreeProps) {
 interface EditorProps {
     children: React.ReactNode
     defaultBlockType: string
+    /** @deprecated Use `onChange`. Receives the live blocks object, which keeps being mutated. */
     extractBlocks?: (blocks: any) => any
+    /**
+     * Fires after the page is edited, including while typing. Edits are batched (500ms) and
+     * flushed right away when the app leaves the foreground or the editor unmounts.
+     */
+    onChange?: (change: BlocksChange) => void
     defaultBlocks?: any
     contentContainerStyle?: any
     /** Component to render above the keyboard */
@@ -92,6 +98,7 @@ export function Editor(props : EditorProps) {
         defaultBlockType,
 
         extractBlocks,
+        onChange,
         defaultBlocks,
         contentContainerStyle,
         ToolbarComponent,
@@ -108,6 +115,7 @@ export function Editor(props : EditorProps) {
             <BlocksProvider
                 defaultBlocks={defaultBlocks}
                 extractBlocks={extractBlocks}
+                onChange={onChange}
             >
                 <TextBlocksProvider>
                     <GestureHandlerRootView>

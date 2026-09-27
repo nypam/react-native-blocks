@@ -61,6 +61,7 @@ export function PageBlock({ blockId } : Props) {
     
           const updatedBlock = updateBlockData(blocks[blockId], {
             format: {
+                ...blocks[blockId]?.format,
                 page_cover: result.assets[0].uri
                 /* page_cover_position */
             }
@@ -85,8 +86,8 @@ export function PageBlock({ blockId } : Props) {
 
           const updatedBlock = updateBlockData(blocks[blockId], {
             format: {
-                page_icon: result.assets[0].uri,
-                ...blocks[blockId]?.format
+                ...blocks[blockId]?.format,
+                page_icon: result.assets[0].uri
             }
           });
     
@@ -100,8 +101,8 @@ export function PageBlock({ blockId } : Props) {
 
         const updatedBlock = updateBlockData(blocks[blockId], {
             format: {
-            page_icon: emoji,
-            ...blocks[blockId]?.format
+            ...blocks[blockId]?.format,
+            page_icon: emoji
             }
         });
 

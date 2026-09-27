@@ -1,6 +1,8 @@
-import { createContext, RefObject, useContext, useRef, useState, useEffect } from "react";
+import { createContext, ReactNode, RefObject, useContext, useRef, useState, useEffect } from "react";
+import { AppState } from "react-native";
 import { Block } from "../interfaces/Block.interface";
 import { updateBlockData, insertBlockIdIntoContent } from "../core";
+import { createChangeTracker } from "../core/changeTracker";
 import { useBlockRegistrationContext } from "./BlockRegistration";
 import * as Crypto from 'expo-crypto';
 
@@ -39,8 +41,23 @@ interface BlocksContext {
     turnBlockInto: (blockId: string, blockType: string) => Block;
     updateBlock: (updatedBlock: Block) => void;
     updateBlockV2: (blockId: string, blockData: Partial<Block>) => void;
+    setBlockTitle: (blockId: string, title: string) => void;
     blockTypes: string[];
 }
+
+export interface BlocksChange {
+    /** Blocks created or modified since the last change. These are copies, safe to keep or send. */
+    updated: Record<string, Block>;
+    /** Ids of the blocks removed since the last change. */
+    removed: string[];
+    /** Returns a copy of the whole page, with the same shape as `defaultBlocks`. */
+    getBlocks: () => Record<string, Block>;
+}
+
+/** Changes are batched and reported once no edits happened for this long. */
+const CHANGE_DEBOUNCE_MS = 500;
+
+const cloneBlocks = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const BlocksContext = createContext<BlocksContext | null>(null);
 
@@ -57,7 +74,14 @@ function useBlock(blockId: string) : Block {
     return blocks[blockId];
 }
 
-function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
+interface BlocksProviderProps {
+    children: ReactNode;
+    defaultBlocks: any;
+    extractBlocks?: (blocks: any) => void;
+    onChange?: (change: BlocksChange) => void;
+}
+
+function BlocksProvider({ children, defaultBlocks, extractBlocks, onChange }: BlocksProviderProps) {
     const blocksRef = useRef({
         // This block should never be removed nor updated.
         "root": {
@@ -84,8 +108,51 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
     const [shouldUpdate, setShouldUpdate] = useState([]);
 
     useEffect(() => {
-        extractBlocks(blocksRef.current);
+        extractBlocks?.(blocksRef.current);
     }, [blocksOrder]);
+
+    /**
+     * Change tracking.
+     * Every block action marks the blocks it touched. Marked blocks are reported to `onChange` in batches,
+     * and right away when the app leaves the foreground or the editor unmounts, so no edit is lost.
+     */
+    const onChangeRef = useRef(onChange);
+    onChangeRef.current = onChange;
+
+    function getBlocks() {
+        const { root, ...pageBlocks } = blocksRef.current;
+        return cloneBlocks(pageBlocks);
+    }
+
+    const trackerRef = useRef<ReturnType<typeof createChangeTracker> | null>(null);
+    if (trackerRef.current === null) {
+        trackerRef.current = createChangeTracker((updatedIds, removedIds) => {
+            const listener = onChangeRef.current;
+            if (listener === undefined) return;
+
+            const updated: Record<string, Block> = {};
+            updatedIds.forEach(id => {
+                // "root" is internal to the editor and not part of the page.
+                if (id !== "root" && blocksRef.current[id] !== undefined) {
+                    updated[id] = cloneBlocks(blocksRef.current[id]);
+                }
+            });
+            if (Object.keys(updated).length === 0 && removedIds.length === 0) return;
+
+            listener({ updated, removed: removedIds, getBlocks });
+        }, CHANGE_DEBOUNCE_MS);
+    }
+    const tracker = trackerRef.current;
+
+    useEffect(() => {
+        const subscription = AppState.addEventListener("change", state => {
+            if (state !== "active") tracker.flush();
+        });
+        return () => {
+            subscription.remove();
+            tracker.flush();
+        };
+    }, []);
     
     /** Block actions
      * Note: I might change all this actions to reducers. reducers can be exported!
@@ -103,6 +170,7 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
         });
         blocksRef.current[newBlock.parent] = updatedBlock;
         blocksRef.current[newBlock.id] = newBlock;
+        tracker.markUpdated(newBlock.parent, newBlock.id);
 
         setBlocksOrder(prevState => [
             rootContent[0],
@@ -165,6 +233,7 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
 
         blocksRef.current[updatedBlock.id] = updatedBlock;
         blocksRef.current[newBlock.id] = newBlock;
+        tracker.markUpdated(updatedBlock.id, newBlock.id);
 
         // If splitting the only child of the "root"
         if (blocksOrder[0] === block.id) {
@@ -173,6 +242,7 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
                 content: [newBlock.id]
             });
             blocksRef.current[updatedParentBlock.id] = updatedParentBlock;
+            tracker.markUpdated(updatedParentBlock.id);
         }
 
         // If splitting the only child of the "root", set the new block as the first block
@@ -225,9 +295,12 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
 
         blocksRef.current[updatedTargetBlock.id] = updatedTargetBlock;
         blocksRef.current[updatedParentBlock.id] = updatedParentBlock;
+        const removedIds = deleteBlockTree(soureBlock.id);
+        tracker.markUpdated(updatedTargetBlock.id, updatedParentBlock.id);
+        tracker.markRemoved(...removedIds);
 
         // Assuming that we are still rendering a flat tree. This should be reviewed with the introduction of nested blocks.
-        setBlocksOrder(prevState => prevState.filter((id: string) => id !== soureBlock.id));
+        setBlocksOrder(prevState => prevState.filter((id: string) => !removedIds.includes(id)));
 
         return {
             prevTitle: sourceBlockText,
@@ -244,9 +317,22 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
         });
 
         blocksRef.current[parentBlock.id] = updatedParentBlock;
-        delete blocksRef.current[blockId];
+        const removedIds = deleteBlockTree(blockId);
+        tracker.markUpdated(parentBlock.id);
+        tracker.markRemoved(...removedIds);
 
-        setBlocksOrder(prevState => prevState.filter((id: string) => id !== blockId));
+        setBlocksOrder(prevState => prevState.filter((id: string) => !removedIds.includes(id)));
+    }
+
+    /**
+     * Deletes a block and all its nested blocks, so none of them is left behind unreachable.
+     * @returns The ids of the deleted blocks.
+     */
+    function deleteBlockTree(blockId: string): string[] {
+        const block = blocksRef.current[blockId];
+        if (block === undefined) return [];
+        delete blocksRef.current[blockId];
+        return [blockId, ...(block.content ?? []).flatMap(deleteBlockTree)];
     }
 
     const moveBlock = (blockId: string, parentId: string, targetId: string, closestTo: "start" | "end") => {
@@ -263,6 +349,7 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
         });
 
         blocksRef.current[parentId] = updatedBlock;
+        tracker.markUpdated(parentId);
         setBlocksOrder([
             blocksRef.current["root"].content[0], // Keep root block only child at the top.
             ...blocksRef.current[blocksRef.current["root"].content[0]].content // Update the rest of the blocks order.
@@ -278,6 +365,7 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
             type: blockType
         });
         blocksRef.current[updatedBlock.id] = updatedBlock;
+        tracker.markUpdated(updatedBlock.id);
         setBlocksOrder(prevState => [...prevState]); // re render blocks
         return updatedBlock;
     }
@@ -286,14 +374,32 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
      * Does not trigger a re render
      */
     function updateBlock(updatedBlock: Block) {
+        // Ignore updates to removed blocks (e.g. a text input blurring after its block was merged away).
+        if (blocksRef.current[updatedBlock.id] === undefined) return;
         blocksRef.current[updatedBlock.id] = updatedBlock;
+        tracker.markUpdated(updatedBlock.id);
         setBlocksOrder(prevState => [...prevState]);
     }
 
     function updateBlockV2(blockId: string, blockData: Partial<Block>) {
+        if (blocksRef.current[blockId] === undefined) return;
         const updatedBlock = updateBlockData(blocksRef.current[blockId], blockData);
         blocksRef.current[updatedBlock.id] = updatedBlock;
+        tracker.markUpdated(updatedBlock.id);
         setBlocksOrder(prevState => [...prevState]);
+    }
+
+    /**
+     * Stores the text of a block while typing.
+     * Does not trigger a re render.
+     */
+    function setBlockTitle(blockId: string, title: string) {
+        const block = blocksRef.current[blockId];
+        if (block === undefined) return;
+        blocksRef.current[blockId] = updateBlockData(block, {
+            properties: { ...block.properties, title }
+        });
+        tracker.markUpdated(blockId);
     }
 
     const value = {
@@ -316,6 +422,7 @@ function BlocksProvider({ children, defaultBlocks, extractBlocks }: any) {
         moveBlock: moveBlock,
         getBlockSnapshot: (blockId: string) => blocksRef.current[blockId],
         updateBlockV2,
+        setBlockTitle,
         textBasedBlocks,
         blockTypes
     }
